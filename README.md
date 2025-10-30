@@ -93,3 +93,12 @@ Set the following variables in your GitLab project:
 #### Optional Variables:
 - `AWS_DEFAULT_REGION` - AWS region (defaults to eu-west-2)
 
+## Using with GitLab On-Premises (Self-Hosted)
+
+If you are using a self-hosted GitLab instance, you must use the **Port execution agent** instead of the webhook backend. The agent securely triggers pipelines in your on-premises GitLab via Kafka.
+
+**Steps:**
+1. **Install the Port execution agent** using Helm and configure it with your Kafka and Port credentials, as well as your GitLab trigger token and self-hosted GitLab URL. See [official instructions](https://docs.port.io/actions-and-automations/setup-backend/gitlab-pipeline/self-hosted/).
+2. **In Port,** set the action backend type to **Run GitLab Pipeline** (not Webhook) and provide your project, group/subgroup, and default ref.
+
+> Do not use the SaaS webhook URL format for on-premises GitLab. For full details, refer to the [self-hosted GitLab setup guide](https://docs.port.io/actions-and-automations/setup-backend/gitlab-pipeline/self-hosted/#configure-the-backend).
