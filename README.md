@@ -77,7 +77,7 @@ Create the following blueprint in your Port instance:
 ```
 
 #### Port Action
-Create the Port action that triggers this GitLab pipeline, found here: `port-ssa.json`
+Create the Port action that triggers this GitLab pipeline, found here: [port-ssa.json](./port-sss.json)
 
 ### 2. GitLab CI/CD Variables
 
