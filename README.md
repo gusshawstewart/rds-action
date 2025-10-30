@@ -1,4 +1,4 @@
-# AWS RDS Database Provisioning with Port
+# AWS RDS Database Provisioning with Port using GitLab Pipeline
 
 This repository contains a GitLab CI/CD pipeline that provisions AWS RDS database instances through Port actions. The pipeline creates databases dynamically with unique naming, quota checking, and full Port integration for tracking.
 
