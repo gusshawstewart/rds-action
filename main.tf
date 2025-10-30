@@ -85,14 +85,14 @@ resource "aws_security_group" "rds" {
     from_port   = local.db_port
     to_port     = local.db_port
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [data.aws_vpc.default.cidr_block]
   }
 
   egress {
     from_port   = local.db_port
     to_port     = local.db_port
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [data.aws_vpc.default.cidr_block]
   }
 
   tags = {
