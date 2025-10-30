@@ -1,0 +1,93 @@
+{
+  "identifier": "create_rds_instance_webhook",
+  "title": "Create RDS Instance (Webhook)",
+  "icon": "AmazonRDS",
+  "description": "Provision a new AWS RDS instance via webhook",
+  "trigger": {
+    "type": "self-service",
+    "operation": "CREATE",
+    "userInputs": {
+      "properties": {
+        "db_instance_identifier": {
+          "title": "DB Instance Identifier",
+          "type": "string"
+        },
+        "db_master_password": {
+          "title": "DB Master Password",
+          "type": "string"
+        },
+        "db_master_username": {
+          "title": "DB Master Username",
+          "type": "string"
+        },
+        "db_engine": {
+          "title": "DB Engine",
+          "type": "string",
+          "default": "mysql",
+          "enum": [
+            "mysql",
+            "postgres",
+            "sqlserver",
+            "oracle"
+          ],
+          "enumColors": {
+            "mysql": "lightGray",
+            "postgres": "lightGray",
+            "sqlserver": "lightGray",
+            "oracle": "lightGray"
+          }
+        },
+        "allocated_storage": {
+          "title": "Allocated Storage",
+          "type": "number",
+          "default": 20
+        },
+        "db_instance_class": {
+          "title": "DB Instance Class",
+          "type": "string",
+          "default": "db.t3.micro"
+        }
+      },
+      "required": [
+        "db_instance_identifier",
+        "db_master_password",
+        "db_master_username",
+        "db_engine",
+        "allocated_storage",
+        "db_instance_class"
+      ],
+      "order": [
+        "db_instance_identifier",
+        "db_master_username",
+        "db_master_password",
+        "db_engine",
+        "db_instance_class",
+        "allocated_storage"
+      ]
+    }
+  },
+  "invocationMethod": {
+    "type": "WEBHOOK",
+    "url": "https://gitlab.com/api/v4/projects/<YOUR-PROJECT-ID>/ref/main/trigger/pipeline?token=<YOUR-TRIGGER-TOKEN>",
+    "agent": false,
+    "synchronized": false,
+    "method": "POST",
+    "headers": {
+      "RUN_ID": "{{ .run.id }}"
+    },
+    "body": {
+      "db_instance_identifier": "{{ .inputs.db_instance_identifier }}",
+      "db_master_password": "{{ .inputs.db_master_password }}",
+      "db_master_username": "{{ .inputs.db_master_username }}",
+      "db_engine": "{{ .inputs.db_engine }}",
+      "allocated_storage": "{{ .inputs.allocated_storage }}",
+      "db_instance_class": "{{ .inputs.db_instance_class }}",
+      "region": "us-east-2",
+      "port_context": {
+        "entity": "{{ .entity.identifier }}",
+        "runId": "{{ .run.id }}"
+      }
+    }
+  },
+  "requiredApproval": false
+}

@@ -1,29 +1,41 @@
-variable "aws_region" {
-  description = "AWS region to deploy resources"
-  type        = string
-  default     = "us-east-1"
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: MPL-2.0
+
+variable "region" {
+  default     = "eu-west-2"
+  description = "AWS region"
 }
 
-variable "instance_type" {
-  description = "Type of EC2 instance"
-  type        = string
-  default     = "t2.micro"
+variable "db_password" {
+  description = "RDS root user password"
+  sensitive   = true
 }
 
-variable "ami_id" {
-  description = "Amazon Machine Image ID for EC2"
+variable "db_instance_identifier" {
+  description = "RDS instance identifier"
   type        = string
-  default     = "ami-0c55b159cbfafe1f0" # Example for us-east-1
 }
 
-variable "key_name" {
-  description = "Key pair name for SSH access"
+variable "instance_class" {
+  description = "RDS instance class"
   type        = string
-  default     = "my-key"
+  default     = "db.t3.micro"
 }
 
-variable "instance_name" {
-  description = "Name of the EC2 instance"
+variable "engine" {
+  description = "RDS database engine"
   type        = string
-  default     = "my-ec2-instance"
+  default     = "postgres"
+}
+
+variable "engine_version" {
+  description = "RDS database engine version"
+  type        = string
+  default     = "17.2"  # Default for PostgreSQL, but will be overridden by Port
+}
+
+variable "username" {
+  description = "RDS database username"
+  type        = string
+  default     = "admin"  # Generic default that works for most engines
 }

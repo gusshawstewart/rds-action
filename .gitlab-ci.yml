@@ -1,0 +1,262 @@
+stages:
+  - prerequisites
+  - terraform
+  - port-update
+
+image:
+  name: hashicorp/terraform:latest
+  entrypoint:
+    - '/usr/bin/env'
+    - 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+
+variables:
+  AWS_DEFAULT_REGION: "eu-west-2"
+  # TF_VAR_db_password will be set dynamically from Port payload
+
+before_script:
+  - rm -rf .terraform
+  - apk update && apk add --no-cache curl jq
+  - export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+  - export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+  - export AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
+
+# ----------------------------
+# 1️⃣  Authenticate with Port
+# ----------------------------
+fetch-port-access-token:
+  stage: prerequisites
+  except:
+    - pushes
+  script:
+    - echo "🔐 Authenticating with Port..."
+    - |
+      accessToken=$(curl -s -X POST \
+        -H 'Content-Type: application/json' \
+        -d '{"clientId": "'"$PORT_CLIENT_ID"'", "clientSecret": "'"$PORT_CLIENT_SECRET"'"}' \
+        https://api.getport.io/v1/auth/access_token | jq -r '.accessToken')
+
+      if [ -z "$accessToken" ]; then
+        echo "❌ Failed to get access token from Port"
+        exit 1
+      fi
+
+      runId=$(cat $TRIGGER_PAYLOAD | jq -r '.port_context.runId // .context.runId // empty')
+
+      # Announce start in Port
+      curl -s -X POST \
+        -H 'Authorization: Bearer '"$accessToken" \
+        -H 'Content-Type: application/json' \
+        -d '{"message":"🏃‍♂️ Starting action to create an RDS database"}' \
+        "https://api.getport.io/v1/actions/runs/$runId/logs"
+
+      # Attach pipeline link
+      curl -s -X PATCH \
+        -H 'Authorization: Bearer '"$accessToken" \
+        -H 'Content-Type: application/json' \
+        -d '{"link":"'"$CI_PIPELINE_URL"'"}' \
+        "https://api.getport.io/v1/actions/runs/$runId"
+
+      echo "ACCESS_TOKEN=$accessToken" >> data.env
+  artifacts:
+    reports:
+      dotenv: data.env
+
+# ---------------------------------
+# 2️⃣  Check RDS quota availability
+# ---------------------------------
+check-rds-quota:
+  stage: prerequisites
+  image: registry.gitlab.com/gitlab-org/cloud-deploy/aws-base:latest
+  except:
+    - pushes
+  needs:
+    - job: fetch-port-access-token
+      artifacts: true
+  script:
+    - |
+      echo "🔍 Checking RDS instance class quota..."
+
+      runId=$(cat $TRIGGER_PAYLOAD | jq -r '.port_context.runId // .context.runId // empty')
+      cat $TRIGGER_PAYLOAD | jq .
+
+      DB_INSTANCE_CLASS=$(cat $TRIGGER_PAYLOAD | jq -r '.db_instance_class // .payload.properties.instance_class // "db.t3.micro"')
+      DB_ENGINE=$(cat $TRIGGER_PAYLOAD | jq -r '.db_engine // .payload.properties.engine // "postgres"')
+
+      curl -X POST \
+        -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -d '{"statusLabel": "Checking Quota", "message":"🔍 Checking AWS quota for RDS instance class and storage..."}' \
+        "https://api.getport.io/v1/actions/runs/$runId/logs"
+
+      # Quota example: Standard RDS instance quota (this varies by region/account)
+      quota_code="L-5D7402E8"
+      rds_quota=$(aws service-quotas get-service-quota --service-code rds --quota-code $quota_code --region $AWS_DEFAULT_REGION 2>/dev/null || echo "{}")
+
+      quota_limit=$(echo "$rds_quota" | jq -r '.Quota.Value // 20')
+      current_usage=0 # AWS doesn't expose this directly
+
+      echo "RDS Engine: $DB_ENGINE"
+      echo "RDS Class: $DB_INSTANCE_CLASS"
+      echo "Quota Limit: $quota_limit"
+
+      if [ "$quota_limit" -lt 1 ]; then
+        echo "❌ Quota appears insufficient or undefined."
+        curl -X POST \
+          -H 'Content-Type: application/json' \
+          -H "Authorization: Bearer $ACCESS_TOKEN" \
+          -d '{"terminationStatus":"FAILURE", "message":"Insufficient RDS quota for class '$DB_INSTANCE_CLASS'"}' \
+          "https://api.getport.io/v1/actions/runs/$runId/logs"
+        exit 1
+      fi
+
+      echo "✅ Quota check passed"
+  artifacts:
+    reports:
+      dotenv: data.env
+
+# ---------------------------------
+# 3️⃣  Generate a unique DB name
+# ---------------------------------
+generate-db-name:
+  stage: prerequisites
+  except:
+    - pushes
+  before_script:
+    - apk update && apk add --no-cache curl jq
+  needs:
+    - job: check-rds-quota
+      artifacts: true
+  script:
+    - |
+      echo "🔠 Generating unique DB name from Port entities..."
+
+      runId=$(cat $TRIGGER_PAYLOAD | jq -r '.port_context.runId // .context.runId // empty')
+      blueprint=$(cat $TRIGGER_PAYLOAD | jq -r '.context.blueprint // "database"')
+      dbNameBase=$(cat $TRIGGER_PAYLOAD | jq -r '.db_instance_identifier // .payload.properties.db_identifier // "default-db"')
+
+      accessToken=$ACCESS_TOKEN
+
+      searchQuery='{
+        "combinator": "and",
+        "rules": [
+          {
+            "property": "$blueprint",
+            "operator": "=",
+            "value": "'$blueprint'"
+          },
+          {
+            "property": "$title",
+            "operator": "contains",
+            "value": "'$dbNameBase'"
+          }
+        ]
+      }'
+
+      entities=$(curl -s -X POST \
+        'https://api.getport.io/v1/entities/search' \
+        -H "Authorization: Bearer $accessToken" \
+        -H 'Content-Type: application/json' \
+        -d "$searchQuery" | jq -c .)
+
+      nextNumber=$(echo "$entities" | jq '.entities | length + 1')
+      DB_INSTANCE_IDENTIFIER="${dbNameBase}-${nextNumber}"
+
+      echo "✅ Using DB identifier: $DB_INSTANCE_IDENTIFIER"
+
+      # Store all the dynamic values for terraform
+      echo "DB_INSTANCE_IDENTIFIER=$DB_INSTANCE_IDENTIFIER" >> data.env
+      echo "INSTANCE_CLASS=$(cat $TRIGGER_PAYLOAD | jq -r '.db_instance_class // .payload.properties.instance_class // "db.t3.micro"')" >> data.env
+      echo "ENGINE=$(cat $TRIGGER_PAYLOAD | jq -r '.db_engine // .payload.properties.engine // "postgres"')" >> data.env
+      
+      # Set appropriate defaults based on engine
+      ENGINE_TYPE=$(cat $TRIGGER_PAYLOAD | jq -r '.db_engine // .payload.properties.engine // "postgres"')
+      case $ENGINE_TYPE in
+        "postgres")
+          DEFAULT_VERSION="17.2"
+          DEFAULT_USER="postgres"
+          ;;
+        "mysql")
+          DEFAULT_VERSION="8.0"
+          DEFAULT_USER="admin"
+          ;;
+        "sqlserver")
+          DEFAULT_VERSION="15.00"
+          DEFAULT_USER="admin"
+          ;;
+        "oracle")
+          DEFAULT_VERSION="19.0.0.0.ru-2023-07.rur-2023-07.r1"
+          DEFAULT_USER="admin"
+          ;;
+        *)
+          DEFAULT_VERSION="17.2"
+          DEFAULT_USER="admin"
+          ;;
+      esac
+      
+      echo "ENGINE_VERSION=$(cat $TRIGGER_PAYLOAD | jq -r '.engine_version // .payload.properties.engine_version // "'$DEFAULT_VERSION'"')" >> data.env
+      echo "USERNAME=$(cat $TRIGGER_PAYLOAD | jq -r '.db_master_username // .payload.properties.username // "'$DEFAULT_USER'"')" >> data.env
+
+      curl -X POST \
+        -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer $accessToken" \
+        -d '{"statusLabel": "Provisioning", "message":"🧱 Creating RDS instance '$DB_INSTANCE_IDENTIFIER'..."}' \
+        "https://api.getport.io/v1/actions/runs/$runId/logs"
+  artifacts:
+    reports:
+      dotenv: data.env
+
+# ----------------------------
+# 4️⃣  Terraform apply
+# ----------------------------
+apply:
+  stage: terraform
+  needs:
+    - job: generate-db-name
+      artifacts: true
+  except:
+    - pushes
+  script:
+    - |
+      export TF_VAR_db_instance_identifier=$DB_INSTANCE_IDENTIFIER
+      export TF_VAR_instance_class=$INSTANCE_CLASS
+      export TF_VAR_engine=$ENGINE
+      export TF_VAR_engine_version=$ENGINE_VERSION
+      export TF_VAR_username=$USERNAME
+      export TF_VAR_db_password=$(cat $TRIGGER_PAYLOAD | jq -r '.db_master_password // "'${DB_PASSWORD}'"')
+
+      terraform --version
+      terraform init
+      terraform validate
+      terraform plan -out="planfile"
+      terraform apply -input=false "planfile"
+
+      echo "RDS_HOSTNAME=$(terraform output -raw rds_hostname)" >> infra.env
+      echo "RDS_PORT=$(terraform output -raw rds_port)" >> infra.env
+      echo "RDS_USERNAME=$(terraform output -raw rds_username)" >> infra.env
+  artifacts:
+    reports:
+      dotenv: infra.env
+
+# ----------------------------
+# 5️⃣  Port update on success
+# ----------------------------
+update-run-status:
+  stage: port-update
+  needs:
+    - apply
+  except:
+    - pushes
+  script:
+    - |
+      accessToken=$(curl -s -X POST \
+        -H 'Content-Type: application/json' \
+        -d '{"clientId": "'"$PORT_CLIENT_ID"'", "clientSecret": "'"$PORT_CLIENT_SECRET"'"}' \
+        https://api.getport.io/v1/auth/access_token | jq -r '.accessToken')
+
+      runId=$(cat $TRIGGER_PAYLOAD | jq -r '.port_context.runId // .context.runId // empty')
+
+      curl -X POST \
+        -H "Authorization: Bearer $accessToken" \
+        -H 'Content-Type: application/json' \
+        -d '{"terminationStatus":"SUCCESS", "message":"✅ RDS instance created successfully: '$RDS_HOSTNAME'"}' \
+        "https://api.getport.io/v1/actions/runs/$runId/logs"
